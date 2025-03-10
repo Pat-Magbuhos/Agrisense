@@ -1,0 +1,26 @@
+    1  date
+    2  exit
+    3  git --version
+    4  git config --global user.name "Pat-Magbuhos"
+    5  git config --global user.email "patrickjosephmagbuhos@gmail.com"
+    6  git config --global --list
+    7  cd /home/Agrisense/Agrisense
+    8  pwd
+    9  ls -l /home/Agrisense/
+   10  mkdir -p /home/Agrisense/Thesis
+   11  cd /home/Agrisense/Thesis
+   12  git init
+   13  git branch -m main
+   14  git remote add origin https://github.com/Pat-Magbuhos/Agrisense.git
+   15  git remote -v
+   16  git add .
+   17  git commit -m "Initial commit - Thesis setup on Raspberry Pi"
+   18  git push -u origin main
+   19  ls - la
+   20  ls -la
+   21  git add
+   22  echo "# Agrisense Thesis Setup" > README.md
+   23  ls -la
+   24  git add .
+   25  git commit -m "Initial commit - Added README"
+   26  history > setup_log.txt

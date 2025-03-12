@@ -3,13 +3,17 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, db
 
-# Load environment variables from .env
-dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+# Load environment variables from the correct .env location
+dotenv_path = os.path.join(os.path.dirname(__file__), "venv", ".env")  # Make sure to include "venv"
 load_dotenv(dotenv_path)
 
 # Retrieve Firebase credentials from .env
 FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
 SERVICE_ACCOUNT_PATH = os.getenv("SERVICE_ACCOUNT_PATH", "venv/serviceAccountKey.json")
+
+# Debugging output
+print(f"FIREBASE_DB_URL: {FIREBASE_DB_URL}")  # Should print the URL
+print(f"SERVICE_ACCOUNT_PATH: {SERVICE_ACCOUNT_PATH}")  # Should show correct path
 
 # Validate environment variables
 if not FIREBASE_DB_URL:

@@ -33,7 +33,7 @@ print("✅ Firebase Initialized Successfully!")
 model = YOLO("/home/Agrisense/Thesis/best.pt")  # Update with correct model path
 
 # Load an image from Raspberry Pi
-input_image_path = "/home/Agrisense/Thesis/Detected/Detected/20250315_181349.jpg"  # Update with actual image path
+input_image_path = "/home/Agrisense/Thesis/Captured/Raw/20250323_091109.jpg"  # Update with actual image path
 image = cv2.imread(input_image_path)
 
 if image is None:

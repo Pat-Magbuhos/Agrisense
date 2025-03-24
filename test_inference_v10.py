@@ -43,7 +43,7 @@ for directory in [CAPTURED_RAW_DIR, CAPTURED_RETRIEVED_DIR, DETECTED_DIR, DETECT
     os.makedirs(directory, exist_ok=True)
 
 # Load trained model
-model = YOLO("/home/Agrisense/Thesis/best.pt")
+model = YOLO("/home/Agrisense/Thesis/bestv2.pt")
 
 # Trigonometry Constants
 CAMERA_ANGLE = 45  # Degrees
@@ -65,14 +65,14 @@ def estimate_height(bbox):
     return round(real_height, 2)
 
 # Function to estimate leaf area
-def estimate_leaf_area(bbox, cm_per_pixel):
+def estimate_leaf_area(bbox):
     pixel_width = bbox[2] - bbox[0]
     pixel_height = bbox[3] - bbox[1]
-    pixel_area = pixel_width * pixel_height
+    pixel_area = pixel_width * pixel_height  
 
-    # Convert pixel area to cm² using calibrated scale
-    pixel_area_to_cm2 = cm_per_pixel ** 2
-    real_area = pixel_area * pixel_area_to_cm2
+    # Convert pixel area to cm² (Adjust scaling factor based on calibration)
+    scale_factor = 0.05
+    real_area = pixel_area * scale_factor
     return round(real_area, 2)
 
 # Improved Leaf Counting using Contours
@@ -110,7 +110,7 @@ def count_leaves(image_path):
     cv2.imwrite(processed_image_path, output)
 
     leaf_count = len(leaf_contours)
-    print(f"🌱 Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
+    print(f" Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
     
     return leaf_count, processed_image_path
 
@@ -130,29 +130,19 @@ def capture_image():
         image_path = os.path.join(CAPTURED_RAW_DIR, f"{timestamp}.jpg")
 
         print("Capturing image...")
-        os.system(f"libcamera-jpeg -o {image_path} --width 1920 --height 1080 --quality 90 --framerate 30")
+        os.system(f"libcamera-jpeg -o {image_path} --width 640 --height 640 --quality 90 --framerate 30")
+        
+
+	# Resize the image for model processing
+        image = cv2.imread(image_path)
+        resized_image = cv2.resize(image, (640, 640))  # Resize to a smaller size for faster detection
+        
+        resized_image_path = image_path.replace(".jpg", "_resized.jpg")
+        cv2.imwrite(resized_image_path, resized_image)  # Save resized image
 
         return image_path, timestamp
-
-    except Exception as e:
-        print(f"Error capturing image: {e}")
-        return None, None
-
-# Function to upload images to Firebase
-def upload_image(image_path, image_type, timestamp):
-    try:
-        with open(image_path, "rb") as image_file:
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-
-        firebase_path = f"detections/{timestamp}/{image_type}"
-        ref = db.reference(firebase_path)
-        ref.set(image_data)
-        print(f"Uploaded {image_path} to Firebase under {firebase_path}")
-    except Exception as e:
-        print(f"Error uploading {image_path}: {e}")
-
 # Function to process image
-def process_image(raw_image_path, timestamp, cm_per_pixel):
+def process_image(raw_image_path, timestamp):
     detected_image_path = os.path.join(DETECTED_DIR, f"{timestamp}.jpg")
 
     try:
@@ -172,7 +162,7 @@ def process_image(raw_image_path, timestamp, cm_per_pixel):
                 bbox = bbox.cpu().numpy().astype(int)
 
                 estimated_height = estimate_height(bbox)
-                leaf_area = estimate_leaf_area(bbox, cm_per_pixel)
+                leaf_area = estimate_leaf_area(bbox)
                 total_leaf_area += leaf_area
 
                 growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
@@ -188,9 +178,6 @@ def process_image(raw_image_path, timestamp, cm_per_pixel):
         print(f"Growth parameters uploaded to {firebase_path}")
 
         cv2.imwrite(detected_image_path, output_image)
-        upload_image(raw_image_path, "Raw", timestamp)  # Upload raw image
-        upload_image(detected_image_path, "Detected", timestamp)  # Upload detected image
-
         return detected_image_path, processed_image_path
 
     except Exception as e:
@@ -201,8 +188,7 @@ def process_image(raw_image_path, timestamp, cm_per_pixel):
 while True:
     raw_image_path, timestamp = capture_image()
     if raw_image_path:
-        cm_per_pixel = 0.2736  # Assuming this value is derived from calibration
-        detected_image_path, processed_image_path = process_image(raw_image_path, timestamp, cm_per_pixel)
+        detected_image_path, processed_image_path = process_image(raw_image_path, timestamp)
 
     cont = input("\nPress Enter to capture again or type 'q' to quit: ")
     if cont.lower() == 'q':

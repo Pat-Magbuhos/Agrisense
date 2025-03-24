@@ -43,7 +43,7 @@ for directory in [CAPTURED_RAW_DIR, CAPTURED_RETRIEVED_DIR, DETECTED_DIR, DETECT
     os.makedirs(directory, exist_ok=True)
 
 # Load trained model
-model = YOLO("/home/Agrisense/Thesis/best.pt")
+model = YOLO("/home/Agrisense/Thesis/bestv2.pt")
 
 # Trigonometry Constants
 CAMERA_ANGLE = 45  # Degrees
@@ -61,18 +61,24 @@ GROWTH_THRESHOLDS = {
 def estimate_height(bbox):
     pixel_height = bbox[3] - bbox[1]
     real_height = (CAMERA_HEIGHT * pixel_height) / FOCAL_LENGTH
-    real_height /= np.tan(np.radians(CAMERA_ANGLE))
-    return round(real_height, 2)
+    real_height = real_height / np.tan(np.radians(CAMERA_ANGLE))
+    return round(real_height.item(), 2) if hasattr(real_height, 'item') else round(real_height, 2)
 
 # Function to estimate leaf area
 def estimate_leaf_area(bbox, cm_per_pixel):
     pixel_width = bbox[2] - bbox[0]
     pixel_height = bbox[3] - bbox[1]
-    pixel_area = pixel_width * pixel_height
 
-    # Convert pixel area to cm² using calibrated scale
+    # Convert tensor to float if needed
+    if hasattr(pixel_width, 'item'):
+        pixel_width = pixel_width.item()
+    if hasattr(pixel_height, 'item'):
+        pixel_height = pixel_height.item()
+
+    pixel_area = pixel_width * pixel_height
     pixel_area_to_cm2 = cm_per_pixel ** 2
     real_area = pixel_area * pixel_area_to_cm2
+
     return round(real_area, 2)
 
 # Improved Leaf Counting using Contours
@@ -130,9 +136,19 @@ def capture_image():
         image_path = os.path.join(CAPTURED_RAW_DIR, f"{timestamp}.jpg")
 
         print("Capturing image...")
-        os.system(f"libcamera-jpeg -o {image_path} --width 1920 --height 1080 --quality 90 --framerate 30")
+        os.system(f"libcamera-jpeg -o {image_path} --width 1280 --height 1280 --quality 90 --framerate 30")
+        
+
+	# Resize the image for model processing
+        image = cv2.imread(image_path)
+        resized_image = cv2.resize(image, (1280, 1280))  # Resize to a smaller size for faster detection
+        
+        resized_image_path = image_path.replace(".jpg", "_resized.jpg")
+        cv2.imwrite(resized_image_path, resized_image)  # Save resized image
 
         return image_path, timestamp
+
+	#resizing the image
 
     except Exception as e:
         print(f"Error capturing image: {e}")
@@ -151,58 +167,81 @@ def upload_image(image_path, image_type, timestamp):
     except Exception as e:
         print(f"Error uploading {image_path}: {e}")
 
-# Function to process image
 def process_image(raw_image_path, timestamp, cm_per_pixel):
     detected_image_path = os.path.join(DETECTED_DIR, f"{timestamp}.jpg")
+    pest_name = "None"  # Default value if no pest is detected
+    growth_stage = "None"  # Default value if no growth stage is identified
 
     try:
         image = cv2.imread(raw_image_path)
         if image is None:
             raise FileNotFoundError(f"ERROR: Image file not found at {raw_image_path}")
 
-        results = model.predict(image, conf=0.5)
-        output_image = results[0].plot()
+        # Resize the image to match model's expected input size (e.g., 1280x1280)
+        resized_image = cv2.resize(image, (1280, 1280))  # Resize for consistent input
+        results = model.predict(resized_image, conf=0.3, iou=0.1)  # Lower confidence threshold
+        output_image = results[0].plot()  # Get the output image with bounding boxes
 
         leaf_count, processed_image_path = count_leaves(raw_image_path)
         total_leaf_area = 0
         estimated_height = 0
 
+        # Detect pests and extract pest name
         for result in results:
-            for bbox in result.boxes.xyxy:
-                bbox = bbox.cpu().numpy().astype(int)
+            if len(result.boxes) > 0:  # Check if there are any detected bounding boxes
+                print(f"Detected {len(result.boxes)} bounding boxes")
+                for bbox, class_id in zip(result.boxes.xyxy, result.boxes.cls):
+                    print(f"Bounding box coordinates: {bbox}")
+                class_id = int(class_id.item()) if hasattr(class_id, 'item') else int(class_id)
+
+                if class_id == 0:
+                    pest_name = result.names[class_id]
+
 
                 estimated_height = estimate_height(bbox)
                 leaf_area = estimate_leaf_area(bbox, cm_per_pixel)
                 total_leaf_area += leaf_area
 
-                growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
+        growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
 
+        # Save growth parameters to Firebase
         firebase_path = f"detections/{timestamp}/growth_parameters"
         ref = db.reference(firebase_path)
         ref.set({
             "height_cm": estimated_height,
             "leaf_count": leaf_count,
             "leaf_area_cm2": total_leaf_area,
-            "growth_stage": growth_stage
+            "growth_stage": growth_stage,
+            "pest_detected": pest_name  # Upload pest detection result
         })
-        print(f"Growth parameters uploaded to {firebase_path}")
+        print(f"Growth parameters and pest detection uploaded to {firebase_path}")
 
+        # Save the detected image
         cv2.imwrite(detected_image_path, output_image)
+
+        # Upload both raw and detected images to Firebase
         upload_image(raw_image_path, "Raw", timestamp)  # Upload raw image
         upload_image(detected_image_path, "Detected", timestamp)  # Upload detected image
 
-        return detected_image_path, processed_image_path
+        # Always return 4 values
+        return detected_image_path, processed_image_path, pest_name, growth_stage
 
     except Exception as e:
         print(f"Error processing image: {e}")
-        return None, None
+        # If no pest detected or growth stage identified, still upload the images
+        upload_image(raw_image_path, "Raw", timestamp)
+        upload_image(detected_image_path, "Detected", timestamp)
+        return None, None, pest_name, growth_stage
 
-# Main loop for continuous image capture
+
+# Main loop for continuous image capture and processing
 while True:
     raw_image_path, timestamp = capture_image()
     if raw_image_path:
         cm_per_pixel = 0.2736  # Assuming this value is derived from calibration
-        detected_image_path, processed_image_path = process_image(raw_image_path, timestamp, cm_per_pixel)
+        
+        # Unpack the 4 values returned by process_image
+        detected_image_path, processed_image_path, pest_name, growth_stage = process_image(raw_image_path, timestamp, cm_per_pixel)
 
     cont = input("\nPress Enter to capture again or type 'q' to quit: ")
     if cont.lower() == 'q':

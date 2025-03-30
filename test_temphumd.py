@@ -1,15 +1,25 @@
 import time
-import board
 import adafruit_dht
+import board
 
-# Using GPIO27
-dht_device = adafruit_dht.DHT22(board.D27)
+# GPIO22 (Pin 15)
+dhtDevice = adafruit_dht.DHT22(board.D27)
 
-while True:
-    try:
-        temperature = dht_device.temperature
-        humidity = dht_device.humidity
-        print(f"Temp: {temperature:.1f}°C, Humidity: {humidity:.1f}%")
-    except RuntimeError as e:
-        print(f"Read error: {e}")
-    time.sleep(2)
+try:
+    while True:
+        try:
+            temperature_c = dhtDevice.temperature
+            humidity = dhtDevice.humidity
+            print(f"Temp: {temperature_c:.2f} °C | 💧 Humidity: {humidity:.2f}%")
+        except RuntimeError as error:
+            print(f"Sensor error: {error.args[0]}")
+            time.sleep(2)
+            continue
+
+        time.sleep(2)
+
+except KeyboardInterrupt:
+    print("Stopped by user.")
+
+finally:
+    dhtDevice.exit()

@@ -2,18 +2,13 @@ import os
 import base64
 import numpy as np
 import subprocess
-import time
+from datetime import datetime
 from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, db
 from ultralytics import YOLO  # YOLO model for inference
 import cv2  # OpenCV for processing
-from AgrisenseSensors import (
-    read_ds18b20_temp,
-    read_light,
-    dhtDevice,
-    upload_sensor_data_to_firebase
-)
+import Adafruit_DHT  # DHT sensor library
 
 # Load environment variables from .env
 dotenv_path = os.path.join(os.path.dirname(__file__), "venv/.env")
@@ -49,7 +44,7 @@ for directory in [CAPTURED_RAW_DIR, CAPTURED_RETRIEVED_DIR, DETECTED_DIR, DETECT
     os.makedirs(directory, exist_ok=True)
 
 # Load trained model
-model = YOLO("/home/Agrisense/Thesis/modelv2.pt")
+model = YOLO("/home/Agrisense/Thesis/best.pt")
 
 # Trigonometry Constants
 CAMERA_ANGLE = 45  # Degrees
@@ -71,12 +66,14 @@ def estimate_height(bbox):
     return round(real_height, 2)
 
 # Function to estimate leaf area
-def estimate_leaf_area(bbox, cm_per_pixel):
+def estimate_leaf_area(bbox):
     pixel_width = bbox[2] - bbox[0]
     pixel_height = bbox[3] - bbox[1]
-    pixel_area = pixel_width * pixel_height
-    pixel_area_to_cm2 = cm_per_pixel ** 2
-    real_area = pixel_area * pixel_area_to_cm2
+    pixel_area = pixel_width * pixel_height  # Approximate area in pixels
+
+    # Convert pixel area to cm² (Adjust scaling factor based on calibration)
+    scale_factor = 0.05
+    real_area = pixel_area * scale_factor
     return round(real_area, 2)
 
 # Improved Leaf Counting using Contours
@@ -86,19 +83,26 @@ def count_leaves(image_path):
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY_INV, 11, 2)
-    kernel = np.ones((3,3), np.uint8)
+
+    kernel = np.ones((3, 3), np.uint8)
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    min_leaf_area = 500
+    min_leaf_area = 500  # Adjust based on plant image
     leaf_contours = [c for c in contours if cv2.contourArea(c) > min_leaf_area]
+
     output = image.copy()
     cv2.drawContours(output, leaf_contours, -1, (0, 255, 0), 2)
+
     processed_image_path = image_path.replace(".jpg", "_contours.jpg")
     cv2.imwrite(processed_image_path, output)
+
     leaf_count = len(leaf_contours)
-    print(f"Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
+    print(f"🌱 Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
+    
     return leaf_count, processed_image_path
 
+# Function to classify growth stage
 def classify_growth(height, leaf_count, leaf_area):
     if height < GROWTH_THRESHOLDS["seedling"]["height"] and leaf_count < GROWTH_THRESHOLDS["seedling"]["leaves"] and leaf_area < GROWTH_THRESHOLDS["seedling"]["leaf_area"]:
         return "Seedling"
@@ -107,91 +111,95 @@ def classify_growth(height, leaf_count, leaf_area):
     else:
         return "Mature"
 
-def capture_image(timestamp):
+# Function to capture image
+def capture_image():
     try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         image_path = os.path.join(CAPTURED_RAW_DIR, f"{timestamp}.jpg")
+
         print("Capturing image...")
-        os.system(f"libcamera-jpeg -o {image_path} --width 1280 --height 1280 --quality 90 --framerate 30")
-        image = cv2.imread(image_path)
-        resized_image = cv2.resize(image, (640, 640))
-        resized_image_path = image_path.replace(".jpg", "_resized.jpg")
-        cv2.imwrite(resized_image_path, resized_image)
-        return image_path
+        os.system(f"libcamera-jpeg -o {image_path} --width 1024 --height 768 --quality 85 --nopreview")
+
+        return image_path, timestamp
+
     except Exception as e:
         print(f"Error capturing image: {e}")
-        return None
+        return None, None
 
-def upload_image(image_path, image_type, timestamp):
-    try:
-        with open(image_path, "rb") as image_file:
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-        firebase_path = f"detections/{timestamp}/{image_type}"
-        ref = db.reference(firebase_path)
-        ref.set(image_data)
-        print(f"Uploaded {image_path} to Firebase under {firebase_path}")
-    except Exception as e:
-        print(f"Error uploading {image_path}: {e}")
+# Function to read DHT sensor (temperature and humidity)
+def read_dht_sensor():
+    humidity, temperature = None, None
+    retries = 5
+    for _ in range(retries):
+        humidity, temperature = Adafruit_DHT.read(Adafruit_DHT.DHT22, 4)
+        if humidity is not None and temperature is not None:
+            return temperature, humidity
+        else:
+            print("Failed to get reading, trying again...")
+            time.sleep(2)  # Wait 2 seconds before retrying
+    print("Failed to read sensor after multiple attempts.")
+    return None, None
 
-def process_image(raw_image_path, timestamp, cm_per_pixel):
+# Function to process image
+def process_image(raw_image_path, timestamp):
     detected_image_path = os.path.join(DETECTED_DIR, f"{timestamp}.jpg")
-    pest_name = "None"
-    growth_stage = "None"
+
     try:
         image = cv2.imread(raw_image_path)
         if image is None:
             raise FileNotFoundError(f"ERROR: Image file not found at {raw_image_path}")
-        resized_image = cv2.resize(image, (1280, 1280))
-        results = model.predict(resized_image, conf=0.3, iou=0.1)  # Lower confidence threshold
+
+        results = model.predict(image, conf=0.5)
         output_image = results[0].plot()
+
         leaf_count, processed_image_path = count_leaves(raw_image_path)
         total_leaf_area = 0
         estimated_height = 0
+
         for result in results:
-            if len(result.boxes) > 0:
-                print(f"Detected {len(result.boxes)} bounding boxes")
-                for bbox, class_id in zip(result.boxes.xyxy, result.boxes.cls):
-                    print(f"Bounding box coordinates: {bbox}")
-                    if class_id == 0:
-                        pest_name = result.names[class_id]
-                        break
-                    estimated_height = estimate_height(bbox)
-                    leaf_area = estimate_leaf_area(bbox, cm_per_pixel)
-                    total_leaf_area += leaf_area
-        growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
+            for bbox in result.boxes.xyxy:
+                bbox = bbox.cpu().numpy().astype(int)
+
+                estimated_height = estimate_height(bbox)
+                leaf_area = estimate_leaf_area(bbox)
+                total_leaf_area += leaf_area
+
+                growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
+
         firebase_path = f"detections/{timestamp}/growth_parameters"
         ref = db.reference(firebase_path)
         ref.set({
             "height_cm": estimated_height,
             "leaf_count": leaf_count,
             "leaf_area_cm2": total_leaf_area,
-            "growth_stage": growth_stage,
-            "pest_detected": pest_name
+            "growth_stage": growth_stage
         })
-        print(f"Growth parameters and pest detection uploaded to {firebase_path}")
+        print(f"Growth parameters uploaded to {firebase_path}")
+
+        temperature, humidity = read_dht_sensor()
+        if temperature and humidity:
+            # Upload temperature and humidity data
+            sensor_data_path = f"detections/{timestamp}/sensor_data"
+            ref = db.reference(sensor_data_path)
+            ref.set({
+                "temperature_c": temperature,
+                "humidity_percent": humidity
+            })
+            print(f"Sensor data uploaded to {sensor_data_path}")
+
         cv2.imwrite(detected_image_path, output_image)
-        upload_image(raw_image_path, "Raw", timestamp)
-        upload_image(detected_image_path, "Detected", timestamp)
-        return detected_image_path, processed_image_path, pest_name, growth_stage
+        return detected_image_path, processed_image_path
+
     except Exception as e:
         print(f"Error processing image: {e}")
-        upload_image(raw_image_path, "Raw", timestamp)
-        upload_image(detected_image_path, "Detected", timestamp)
-        return None, None, pest_name, growth_stage
+        return None
 
+# Main loop for continuous image capture
 while True:
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    raw_image_path = capture_image(timestamp)
+    raw_image_path, timestamp = capture_image()
     if raw_image_path:
-        # Upload sensor data at the moment of image capture
-        water_temp = read_ds18b20_temp()
-        light = read_light()
-        air_temp = dhtDevice.temperature
-        humidity = dhtDevice.humidity
-        upload_sensor_data_to_firebase(timestamp, water_temp, light, air_temp, humidity)
+        detected_image_path, processed_image_path = process_image(raw_image_path, timestamp)
 
-        # Process image
-        cm_per_pixel = 0.2736
-        detected_image_path, processed_image_path, pest_name, growth_stage = process_image(raw_image_path, timestamp, cm_per_pixel)
     cont = input("\nPress Enter to capture again or type 'q' to quit: ")
     if cont.lower() == 'q':
         break

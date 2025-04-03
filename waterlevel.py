@@ -1,31 +1,34 @@
 import RPi.GPIO as GPIO
 import time
 
-SENSOR_PIN = 22
+SENSOR_PIN = 17  # Use any GPIO pin you connected OUT to
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(SENSOR_PIN, GPIO.IN)
 
-def read_sensor():
-    readings = []
-    for _ in range(5):
-        readings.append(GPIO.input(SENSOR_PIN))
-        time.sleep(0.05)
-    # Return majority vote
-    return 1 if readings.count(1) > 2 else 0
+print("Monitoring water level...")
 
 try:
-    print("Monitoring water level...")
-    last_state = None
     while True:
-        state = read_sensor()
-        if state != last_state:
-            if state:
-                print("✅ Water detected!")
-            else:
-                print("❌ No water detected!")
-            last_state = state
+        state = GPIO.input(SENSOR_PIN)
+        if state == GPIO.HIGH:
+            print("💧 Water Detected")
+        else:
+            print("🚫 No Water Detected")
         time.sleep(1)
 
 except KeyboardInterrupt:
+    print("Exiting...")
     GPIO.cleanup()
+
+last_state = None
+
+while True:
+    state = GPIO.input(SENSOR_PIN)
+    if state != last_state:
+        if state == GPIO.HIGH:
+            print("💧 Water Detected")
+        else:
+            print("🚫 No Water")
+        last_state = state
+    time.sleep(0.5)

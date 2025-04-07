@@ -66,6 +66,8 @@ GROWTH_THRESHOLDS = {
     "mature": {"height": 25, "leaves": 12, "leaf_area": 100},
 }
 
+GROWTH_STAGE_CLASSES = ["Seedling", "Vegetative", "Mature"]
+
 # Function to estimate height using trigonometry
 def estimate_height(bbox):
     pixel_height = bbox[3] - bbox[1]
@@ -119,7 +121,7 @@ def count_leaves(image_path):
     cv2.imwrite(processed_image_path, output)
 
     leaf_count = len(leaf_contours)
-    print(f"🌱 Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
+    print(f"Detected Leaves: {leaf_count} (Saved processed image: {processed_image_path})")
     
     return leaf_count, processed_image_path
 
@@ -131,6 +133,22 @@ def classify_growth(height, leaf_count, leaf_area):
         return "Vegetative"
     else:
         return "Mature"
+    
+def trigger_pump():
+    try:
+        print("Pest detected! Activating pump...")
+        import RPi.GPIO as GPIO
+        RELAY_PIN = 23
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(RELAY_PIN, GPIO.OUT)
+        GPIO.output(RELAY_PIN, GPIO.LOW)  # Turn pump ON
+        time.sleep(5)
+        GPIO.output(RELAY_PIN, GPIO.HIGH)  # Turn pump OFF
+        GPIO.cleanup()
+        print("Pump deactivated.")
+    except Exception as e:
+        print(f"Error triggering pump: {e}")
+
 
 # Function to capture image
 def capture_image():
@@ -170,42 +188,47 @@ def upload_image(image_path, image_type, timestamp):
     except Exception as e:
         print(f"Error uploading {image_path}: {e}")
 
+# Function to process captured image
 def process_image(raw_image_path, timestamp, cm_per_pixel):
     detected_image_path = os.path.join(DETECTED_DIR, f"{timestamp}.jpg")
-    pest_name = "None"  # Default value if no pest is detected
-    growth_stage = "None"  # Default value if no growth stage is identified
+    pest_name = "None"
+    growth_stage = "None"
 
     try:
         image = cv2.imread(raw_image_path)
         if image is None:
             raise FileNotFoundError(f"ERROR: Image file not found at {raw_image_path}")
 
-        # Resize the image to match model's expected input size (e.g., 1280x1280)
-        resized_image = cv2.resize(image, (1280, 1280))  # Resize for consistent input
-        results = model.predict(resized_image, conf=0.3)  # Lower confidence threshold
-        output_image = results[0].plot()  # Get the output image with bounding boxes
+        # Resize the image
+        resized_image = cv2.resize(image, (1280, 1280))
+        results = model.predict(resized_image, conf=0.3)
+        output_image = results[0].plot()
 
         leaf_count, processed_image_path = count_leaves(raw_image_path)
         total_leaf_area = 0
         estimated_height = 0
 
-        # Detect pests and extract pest name
         for result in results:
-            if len(result.boxes) > 0:  # Check if there are any detected bounding boxes
+            if len(result.boxes) > 0:
                 print(f"Detected {len(result.boxes)} bounding boxes")
                 for bbox, class_id in zip(result.boxes.xyxy, result.boxes.cls):
-                    print(f"Bounding box coordinates: {bbox}")
-                    if class_id == 0:  # Assuming class ID 0 is the pest
-                        pest_name = result.names[class_id]  # Get the pest name
-                        break  # Stop once pest is detected
+                    class_name = result.names[int(class_id)]
+                    print(f"Detected class: {class_name}, Bounding box: {bbox}")
 
+                    if class_name not in GROWTH_STAGE_CLASSES:
+                        pest_name = class_name
+                        trigger_pump()  # 🚨 Only for pests
+                        break  # Exit after detecting a pest
+
+                    # Only measure if it's a growth stage
                     estimated_height = estimate_height(bbox)
                     leaf_area = estimate_leaf_area(bbox, cm_per_pixel)
                     total_leaf_area += leaf_area
 
+        # Classify growth stage after checking all boxes
         growth_stage = classify_growth(estimated_height, leaf_count, total_leaf_area)
 
-        # Save growth parameters to Firebase
+        # Upload parameters to Firebase
         firebase_path = f"detections/{timestamp}/growth_parameters"
         ref = db.reference(firebase_path)
         ref.set({
@@ -213,23 +236,19 @@ def process_image(raw_image_path, timestamp, cm_per_pixel):
             "leaf_count": leaf_count,
             "leaf_area_cm2": total_leaf_area,
             "growth_stage": growth_stage,
-            "pest_detected": pest_name  # Upload pest detection result
+            "pest_detected": pest_name
         })
-        print(f"Growth parameters and pest detection uploaded to {firebase_path}")
+        print(f"✅ Uploaded to Firebase: {firebase_path}")
 
-        # Save the detected image
+        # Save and upload images
         cv2.imwrite(detected_image_path, output_image)
+        upload_image(raw_image_path, "Raw", timestamp)
+        upload_image(detected_image_path, "Detected", timestamp)
 
-        # Upload both raw and detected images to Firebase
-        upload_image(raw_image_path, "Raw", timestamp)  # Upload raw image
-        upload_image(detected_image_path, "Detected", timestamp)  # Upload detected image
-
-        # Always return 4 values
         return detected_image_path, processed_image_path, pest_name, growth_stage
 
     except Exception as e:
         print(f"Error processing image: {e}")
-        # If no pest detected or growth stage identified, still upload the images
         upload_image(raw_image_path, "Raw", timestamp)
         upload_image(detected_image_path, "Detected", timestamp)
         return None, None, pest_name, growth_stage

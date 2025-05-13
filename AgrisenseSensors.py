@@ -14,7 +14,8 @@ load_dotenv(dotenv_path)
 
 # --- Retrieve Firebase credentials from .env ---
 FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
-SERVICE_ACCOUNT_PATH = os.getenv("SERVICE_ACCOUNT_PATH", "venv/serviceAccountKey.json")
+SERVICE_ACCOUNT_PATH = "/home/Agrisense/Thesis/venv/serviceAccountKey.json"
+
 
 # --- Validate environment variables ---
 if not FIREBASE_DB_URL:

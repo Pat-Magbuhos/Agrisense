@@ -59,7 +59,7 @@ try:
         # 💧 Turn pump ON for 1 second
         GPIO.output(RELAY_PIN, GPIO.LOW)
         print("Pump ON")
-        time.sleep(1)
+        time.sleep(10)
 
         # 💧 Turn pump OFF
         GPIO.output(RELAY_PIN, GPIO.HIGH)
